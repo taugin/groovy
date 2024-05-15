@@ -1,0 +1,1751 @@
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+
+//SDK需要的仓库地址
+//mavenCentral()
+//google()
+//maven { url "http://nexus.webeyemobi.com/repository/maven-public/"}
+//maven { url 'https://maven.aliyun.com/repository/public' }
+//maven { url 'https://maven.aliyun.com/repository/central' }
+//maven { url 'https://maven.aliyun.com/repository/google' }
+//maven { url 'https://maven.aliyun.com/repository/jcenter' }
+//maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+//maven { url 'https://maven.aliyun.com/repository/releases' }
+//maven { url 'https://sdk.tapjoy.com/' }
+//maven { url 'https://jitpack.io' }
+//maven { url 'https://android-sdk.is.com/'}
+//maven { url 'https://dl-maven-android.mintegral.com/repository/mbridge_android_sdk_oversea'}
+
+/**
+ * 首字母转大写
+ * @param s
+ * @return
+ */
+def toUpperCaseFirstOne(String s) {
+    if (s == null) {
+        return null
+    }
+    if (Character.isUpperCase(s.charAt(0))) {
+        return s;
+    }
+    return (new StringBuilder()).append(Character.toUpperCase(s.charAt(0))).append(s.substring(1)).toString();
+}
+
+try {
+    project.rootProject.allprojects.repositories.each { repo ->
+        repo.maven { r ->
+            r.url = "https://repo.rdc.aliyun.com/repository/130320-release-ATpVKH/"
+            r.credentials.username = "CP751G"
+            r.credentials.password = "TaMWu1x2fG"
+        }
+        repo.maven { r ->
+            r.url = "https://repo.rdc.aliyun.com/repository/130320-snapshot-FOUUZY/"
+            r.credentials.username = "CP751G"
+            r.credentials.password = "TaMWu1x2fG"
+        }
+        repo.maven { r ->
+            r.url = "https://packages.aliyun.com/maven/repository/2017289-release-sRvHjt/"
+            r.credentials.username = "5ef3647994513bd170c627be"
+            r.credentials.password = "xcgJSde4Zuo4"
+        }
+        repo.maven { r ->
+            r.url = "https://packages.aliyun.com/maven/repository/2017289-snapshot-sJZcRc/"
+            r.credentials.username = "5ef3647994513bd170c627be"
+            r.credentials.password = "xcgJSde4Zuo4"
+        }
+        repo.maven { r -> r.url = "https://taugin.gitee.io/werepo" }
+    }
+} catch (Exception e) {
+}
+
+class Global {
+    static Map<String, String> flavorMap = new HashMap<String, String>()
+    static def sAxmlEditorFilePath = null
+    static def s7ZipCommandPath = null
+    static def sAaptFile = null
+    static def sJarSignerFile = null
+    static def sApkSignerFile = null
+    static def sZipAlignFile = null
+}
+
+def getAxmlGroupId() {
+    return "cn.wjdiankong"
+}
+
+def getAxmlArtifactId() {
+    return "axmleditor"
+}
+
+def getAxmlVersion() {
+    return "1.0.4"
+}
+
+def getAxmlImplementation() {
+    return getAxmlGroupId() + ":" + getAxmlArtifactId() + ":" + getAxmlVersion()
+}
+
+def getAxmlFileName() {
+    return getAxmlArtifactId() + "-" + getAxmlVersion() + ".jar"
+}
+
+project.afterEvaluate {
+    project.configurations.compileOnly.setCanBeResolved(true)
+    project.configurations.api.setCanBeResolved(true)
+    project.dependencies.add("compileOnly", getAxmlImplementation())
+    if (project.android.productFlavors.size() > 0) {// 如果有产品风味
+        project.android.productFlavors.each { flavor ->
+            def productFlavor = toUpperCaseFirstOne(flavor.name)
+
+            def encryptReleaseTask = project.tasks.create(String.format("encrypt%sRelease", productFlavor), {
+                doFirst {
+                    encryptAssetsFilesFromApk(flavor.name, false)
+                }
+            })
+            encryptReleaseTask.setGroup("adsdk")
+            def assembleReleaseTask = project.tasks.findByName(String.format("assemble%sRelease", productFlavor))
+            def dependsOnList1 = assembleReleaseTask.getDependsOn()
+            def dependsOnList2 = encryptReleaseTask.getDependsOn()
+            dependsOnList2.clear()
+            encryptReleaseTask.setDependsOn(dependsOnList1)
+            assembleReleaseTask.dependsOn encryptReleaseTask
+
+            assembleReleaseTask.doLast {
+                openReleaseDir(flavor.name)
+                printEncryptInfo()
+            }
+
+            // 给bungle广告文件加密
+            def packageReleaseBungleTask = project.tasks.findByName(String.format("sign%sReleaseBundle", productFlavor))
+            if (packageReleaseBungleTask != null) {
+                packageReleaseBungleTask.doLast {
+                    encryptAssetsFilesFromApk(flavor.name, true)
+                }
+            }
+
+            String generateAdFile = String.format("generateAdFile%s", productFlavor)
+            def generateAdFileTask = project.tasks.create(generateAdFile, {
+                doLast {
+                    generateAdFileByUser(flavor.name)
+                }
+            })
+            generateAdFileTask.setGroup("adsdk")
+
+            String firebaseDebugView = String.format("firebaseDebugView%s", productFlavor)
+            def firebaseDebugViewTask = project.tasks.create(firebaseDebugView, {
+                doLast {
+                    firebaseDebugViewByUser(flavor)
+                }
+            })
+            firebaseDebugViewTask.setGroup("adsdk")
+        }
+    } else { // 无产品风味
+        def encryptReleaseTask = project.tasks.create("encryptRelease", {
+            doFirst {
+                encryptAssetsFilesFromApk(null, false)
+            }
+        })
+        encryptReleaseTask.setGroup("adsdk")
+        def assembleReleaseTask = project.tasks.findByName("assembleRelease")
+        def dependsOnList1 = assembleReleaseTask.getDependsOn()
+        def dependsOnList2 = encryptReleaseTask.getDependsOn()
+        dependsOnList2.clear()
+        encryptReleaseTask.setDependsOn(dependsOnList1)
+        assembleReleaseTask.dependsOn encryptReleaseTask
+
+        assembleReleaseTask.doLast {
+            openReleaseDir(null)
+            printEncryptInfo()
+        }
+
+        def packageReleaseBungleTask = project.tasks.findByName("signReleaseBundle")
+        if (packageReleaseBungleTask != null) {
+            packageReleaseBungleTask.doLast {
+                encryptAssetsFilesFromApk(null, true)
+            }
+        }
+
+        def generateAdFileTask = project.tasks.create("generateAdFile", {
+            doLast {
+                generateAdFileByUser(null)
+            }
+        })
+        generateAdFileTask.setGroup("adsdk")
+
+        String firebaseDebugView = String.format("firebaseDebugView")
+        def firebaseDebugViewTask = project.tasks.create(firebaseDebugView, {
+            doLast {
+                firebaseDebugViewByUser(null)
+            }
+        })
+        firebaseDebugViewTask.setGroup("adsdk")
+    }
+
+    def setHauYuLogVerboseTask = project.tasks.create("setHauYuLogVerbose", {
+        doLast {
+            setHauYuLogVerbose()
+        }
+    })
+
+    setHauYuLogVerboseTask.setGroup("adsdk")
+
+    def addDebugFileTask = project.tasks.create("addDebugFile", {
+        doLast {
+            addDebugFile()
+        }
+    })
+    addDebugFileTask.setGroup("adsdk")
+    def delDebugFileTask = project.tasks.create("delDebugFile", {
+        doLast {
+            delDebugFile()
+        }
+    })
+    delDebugFileTask.setGroup("adsdk")
+
+
+    String aab2apkTaskName = String.format("aab2abk")
+    def aab2apkTask = project.tasks.create(aab2apkTaskName, {
+        doLast {
+            transformAab2ApkFlavor()
+        }
+    })
+    aab2apkTask.setGroup("adsdk")
+
+    android.applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            if (variant.buildType.name == 'release') {
+                String key = null;
+                if (variant.productFlavors != null && variant.productFlavors.size() > 0) {
+                    key = variant.productFlavors[0].name
+                } else {
+                    key = ""
+                }
+                Global.flavorMap.put(key, outputFile)
+            }
+        }
+    }
+}
+
+def isWindows() {
+    return org.gradle.internal.os.OperatingSystem.current().isWindows()
+}
+
+def printOutput(Process p) {
+    println("+++++++++++++++++++++++++++++++++++++++++++")
+    try {
+        def line = null
+        BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))
+        while ((line = br.readLine()) != null) {
+            println(line)
+        }
+        br.close()
+        br = new BufferedReader(new InputStreamReader(p.getErrorStream()))
+        while ((line = br.readLine()) != null) {
+            println(line)
+        }
+        br.close()
+    } catch (Exception e) {
+        System.err.println("error : " + e)
+    }
+    println("-------------------------------------------")
+}
+
+def setHauYuLogVerbose() {
+    def cmdString = "adb shell setprop log.tag.hauyu V"
+    def process = cmdString.execute()
+    process.waitFor(10, TimeUnit.SECONDS)
+    cmdString = "adb shell getprop log.tag.hauyu"
+    process = cmdString.execute()
+    process.waitFor(10, TimeUnit.SECONDS)
+    printOutput(process)
+}
+
+def addDebugFile() {
+    def cmdString = "adb shell touch /sdcard/Download/.debug"
+    def process = cmdString.execute()
+    process.waitFor(10, TimeUnit.SECONDS)
+    cmdString = "adb shell ls -al /sdcard/Download/.debug"
+    process = cmdString.execute()
+    process.waitFor(10, TimeUnit.SECONDS)
+    printOutput(process)
+}
+
+def delDebugFile() {
+    def cmdString = "adb shell rm /sdcard/Download/.debug"
+    def process = cmdString.execute()
+    process.waitFor(10, TimeUnit.SECONDS)
+    cmdString = "adb shell ls -al /sdcard/Download/.debug"
+    process = cmdString.execute()
+    process.waitFor(10, TimeUnit.SECONDS)
+    printOutput(process)
+}
+
+ext.out = []
+
+def printEncryptInfo() {
+    println "\n>>>>>>>>>>>>>>>>>>>>>>>>>>处理的加密文件<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+    ext.out.each {
+        println "> Task " + it
+    }
+    ext.out = []
+    println ">>>>>>>>>>>>>>>>>>>>>>>>>>处理的加密文件<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+}
+
+afterEvaluate {
+    try {
+        def taskName = getGradle().getStartParameter().getTaskRequests()[0]["args"][0].toString()
+        if (taskName != null && taskName.toLowerCase(Locale.ENGLISH).contains("bundle")) {
+            def index = taskName.lastIndexOf(":")
+            if (index > -1) {
+                taskName = taskName.substring(index + 1)
+            }
+            def aTask = project.tasks.findByName(taskName)
+            if (aTask != null) {
+                aTask.doLast {
+                    if (isAAB2ApkAllow()) {
+                        transformAab2ApkFlavor()
+                    } else {
+                        println "> Task :${project.name}:transformAab2Apk aab to apk is not set"
+                    }
+                    openBundleReleaseDir(taskName)
+                }
+            }
+        }
+    } catch (Exception e) {
+    }
+}
+
+def openBundleReleaseDir(String taskName) {
+    if (!ext.has("openRelease") || ext["openRelease"] != true) {
+        return
+    }
+    if (isContainBundleRelease(taskName)) {
+        try {
+            def openCmd = org.gradle.internal.os.OperatingSystem.current().isWindows() ? "explorer.exe" : "open"
+            def outputPath = new File(project.buildDir, "outputs/bundle")
+            def outputReleasePath = new File(outputPath, "release")
+            if (outputReleasePath.exists()) {
+                outputPath = outputReleasePath
+            }
+            def cmd = openCmd + " " + outputPath
+            cmd.execute()
+            println "> Task :${project.name}:openBundleDir [${outputPath}]"
+        } catch (Exception e) {
+        }
+    }
+}
+
+def isContainBundleRelease(String taskName) {
+    if (taskName != null && taskName.contains("Release")) {
+        return true;
+    }
+    return false;
+}
+
+def isAAB2ApkAllow() {
+    def aab2apk = false
+    if (ext.has("aab2apk")) {
+        aab2apk = ext.get("aab2apk")
+    }
+    return aab2apk
+}
+
+def transformAab2ApkFlavor() {
+    if (project.android.productFlavors.size() > 0) {// 如果有产品风味
+        project.android.productFlavors.each { flavor ->
+            def productFlavor = toUpperCaseFirstOne(flavor.name)
+            def baseName = getArchivesBaseName()
+            def aabOutputAabFileName = baseName + "-" + flavor.name + "-release.aab"
+            transformAab2ApkLocked(productFlavor, aabOutputAabFileName)
+        }
+    } else {
+        def baseName = getArchivesBaseName()
+        def aabOutputAabFileName = baseName + "-release.aab"
+        transformAab2ApkLocked(null, aabOutputAabFileName)
+    }
+}
+
+def transformAab2ApkLocked(flavorName, aabOutputAabFileName) {
+    if (aabOutputAabFileName != null) {
+        aabOutputAabFileName = aabOutputAabFileName.replace(".apk", ".aab")
+    }
+
+    def obfuscatedBundleFileName = null
+    try {
+        obfuscatedBundleFileName = aabResGuard.obfuscatedBundleFileName
+    } catch (Exception e) {
+    }
+
+    def finalBundleName = null
+    if (obfuscatedBundleFileName != null && !obfuscatedBundleFileName.trim().isEmpty()) {
+        finalBundleName = obfuscatedBundleFileName
+    } else {
+        finalBundleName = aabOutputAabFileName
+    }
+    def outputAabFile = null
+    def buildDir = getBuildDir()
+    if (flavorName != null && !flavorName.trim().isEmpty()) {
+        outputAabFile = new File(buildDir, "outputs" + File.separatorChar + "bundle" + File.separatorChar + flavorName + "Release" + File.separatorChar + finalBundleName)
+    } else {
+        outputAabFile = new File(buildDir, "outputs" + File.separatorChar + "bundle" + File.separatorChar + "release" + File.separatorChar + finalBundleName)
+    }
+    def finalBundleFile = outputAabFile
+    println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] finalBundleFile : [" + finalBundleFile + "]"
+    if (finalBundleFile == null || !finalBundleFile.exists()) {
+        System.err.println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] finalBundleFile is not exist"
+        return
+    }
+    def signConfig = getSignConfig(flavorName)
+    if (signConfig == null) {
+        System.err.println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] signConfig is Null"
+        return
+    }
+    if (!signConfig.hasProperty("storeFile")
+            || !signConfig.hasProperty("storePassword")
+            || !signConfig.hasProperty("keyAlias")
+            || !signConfig.hasProperty("keyPassword")) {
+        System.err.println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] signConfig is not completion"
+        return
+    }
+    def bundleFileName = "bundletool-1.6.1.jar"
+    def bundleToolDir = new File(gradle.gradleUserHomeDir, "bundletool")
+    bundleToolDir.mkdirs()
+    def bundleToolPath = new File(bundleToolDir, bundleFileName).getAbsolutePath()
+    def bundleToolPathCompleteFile = new File(bundleToolDir, bundleFileName + ".lock").getAbsolutePath()
+    println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] bundleToolPath : [" + bundleToolPath + "] exist : " + new File(bundleToolPath).exists()
+    if (!new File(bundleToolPath).exists() || !new File(bundleToolPathCompleteFile).exists()) {
+        println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] Downloading : [" + bundleFileName + "]"
+        def bundleToolUrl = "https://taugin.gitee.io/adsdk/libs/" + bundleFileName
+        try {
+            downloadFile(bundleToolUrl, bundleToolPath, "> Task :${project.name}:transformAab2Apk [" + flavorName + "] " + bundleFileName)
+            new File(bundleToolPathCompleteFile).createNewFile()
+        } catch (Exception e) {
+            System.err.println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] download file error : " + e
+            if (new File(bundleToolPath).exists()) {
+                new File(bundleToolPath).delete()
+            }
+        }
+    }
+    if (bundleToolPath == null || !new File(bundleToolPath).exists()) {
+        System.err.println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] bundle tool is Null"
+        return
+    }
+    def storeFile = signConfig.storeFile
+    def storePassword = signConfig.storePassword
+    def keyAlias = signConfig.keyAlias
+    def keyPassword = signConfig.keyPassword
+    def finalBundleFileName = finalBundleFile.getName()
+    def finalApkFileName = finalBundleFileName.substring(0, finalBundleFileName.lastIndexOf(".aab"))
+    def finalApksFile = new File(finalBundleFile.getParent(), finalApkFileName + ".apks")
+    def finalApkFile = new File(finalBundleFile.getParent(), finalApkFileName + ".apk")
+    def cmdList = ["java", "-jar", bundleToolPath,
+                   "build-apks",
+                   "--bundle=" + finalBundleFile,
+                   "--output=" + finalApksFile,
+                   "--overwrite", "--verbose",
+                   "--ks=" + storeFile,
+                   "--ks-pass=pass:" + storePassword,
+                   "--ks-key-alias=" + keyAlias,
+                   "--key-pass=pass:" + keyPassword,
+                   "--mode=universal"]
+    def cmdString = cmdList.join(" ")
+    println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] Command : [" + optimizeCommand(cmdString) + "]"
+    try {
+        def result = cmdString.execute().text.trim()
+        println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] Result : [" + result + "]"
+        if (finalApksFile != null && finalApksFile.exists()) {
+            extractFileFromZip(finalApksFile, "universal.apk", finalApkFile)
+            println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] finalApkFile : [" + finalApkFile + "]"
+            if (finalApkFile.exists()) {
+                finalApksFile.delete()
+            }
+        } else {
+            println "> Task :${project.name}:transformAab2Apk [" + flavorName + "] transform aab to apk failed"
+        }
+    } catch (Exception e) {
+        println "error : " + e
+    }
+}
+
+def downloadFile(srcUrl, outputFilePath, progressText) {
+    if (new File(outputFilePath).exists()) {
+        new File(outputFilePath).delete()
+    }
+    def url = new URL(srcUrl)
+    def connection = url.openConnection()
+    def fileSize = connection.contentLength
+    def inputStream = connection.inputStream
+    def outputStream = new FileOutputStream(outputFilePath)
+    byte[] buffer = new byte[4096]
+    int bytesRead
+    long totalBytesRead = 0
+    try {
+        while ((bytesRead = inputStream.read(buffer)) != -1) {
+            outputStream.write(buffer, 0, bytesRead)
+            totalBytesRead += bytesRead
+            if (fileSize > 0) {
+                def progress = (totalBytesRead * 100 / fileSize) as int
+                System.out.print("\r\033[K" + progressText + " Downloading... [$totalBytesRead/$fileSize] $progress% complete")
+            } else {
+                System.out.print("\r\033[K" + progressText + " Downloading... $totalBytesRead complete")
+            }
+            System.out.flush()
+        }
+    } catch (Exception e) {
+        throw e
+    } finally {
+        try {
+            inputStream.close()
+            outputStream.close()
+        } catch (Exception error) {
+        }
+    }
+    println("\n" + progressText + " Download complete!")
+}
+/**
+ * 打开Release目录
+ * @param flavor
+ * @return
+ */
+def openReleaseDir(flavor) {
+    if (!isWindows() || !ext.has("openRelease") || ext["openRelease"] != true) {
+        return
+    }
+    try {
+        def outputDir = String.format("outputs/apk/%srelease", ((flavor != null && flavor.trim().length() > 0) ? flavor + "/" : ""))
+        def outputPath = new File(project.buildDir, outputDir)
+        def cmd = "explorer.exe " + outputPath
+        cmd.execute()
+        println "> Task :${project.name}:openReleaseDir [${outputPath}]"
+    } catch (Exception e) {
+    }
+}
+
+/**
+ * 获取applicationId
+ * @param flavor
+ * @return
+ */
+def getApplicationId(flavor) {
+    if (flavor == null || flavor.trim().length() == 0) {
+        return project.android.defaultConfig.applicationId
+    }
+    def productFlavor = project.android.productFlavors[flavor]
+    if (productFlavor.applicationId == null) {
+        return project.android.defaultConfig.applicationId
+    }
+    return productFlavor.applicationId
+}
+
+/**
+ * 生成包名对应的广告配置文件名称
+ * @param flavor
+ * @return
+ */
+def generateAdFileByUser(flavor) {
+    def appId = getApplicationId(flavor)
+    def packagenameMd5 = Aes.string2MD5(appId)
+    def adConfigName = "c" + packagenameMd5.substring(0, 8) + "fg" + ".[dat/json]"
+    println("+++++++++++++++++++++++++++++++++++++++++++")
+    println "generateAdFileName : " + adConfigName
+    println "generateMDFileName : " + "m" + packagenameMd5.substring(0, 8).reverse() + "dn"
+    println("-------------------------------------------")
+}
+
+def firebaseDebugViewByUser(flavor) {
+    def applicationId = getApplicationId(flavor)
+    println "firebaseDebugViewByUser applicationId : " + applicationId
+    def cmdString = "adb shell setprop debug.firebase.analytics.app " + applicationId
+    cmdString.execute().text.trim()
+    println "firebase debug view result : success"
+}
+
+/**
+ * 获取签名信息
+ * @param flavor
+ * @return
+ */
+def getSignConfig(flavor) {
+    def signConfig = null
+    if (flavor != null && flavor.trim().length() > 0) {
+        try {
+            signConfig = project.android.productFlavors[flavor].signingConfig
+        } catch (Exception e) {
+        }
+    }
+    if (signConfig == null) {
+        try {
+            signConfig = project.android.buildTypes.release.signingConfig
+        } catch (Exception e) {
+        }
+    }
+    return signConfig
+}
+
+/**
+ * 加密assets文件
+ * @param flavorName
+ * @param outputFile
+ * @return
+ */
+def encryptAssetsFilesFromApk(flavor, isAab) {
+    Global.sAxmlEditorFilePath = getAXMLEditJarFile()
+    Global.s7ZipCommandPath = get7ZipCmd()
+    Global.sAaptFile = getAaptFile()
+    Global.sJarSignerFile = getJarSigner()
+    Global.sZipAlignFile = getZipAlignFile()
+    Global.sApkSignerFile = getApkSigner()
+    if (Global.sAaptFile == null && Global.s7ZipCommandPath == null) {
+        println "> Task :${project.name}:encryptAssetsFilesFromApk [aapt and 7z file is not exist, stop encrypt task]"
+        return
+    }
+    if (Global.sJarSignerFile == null) {
+        println "> Task :${project.name}:encryptAssetsFilesFromApk [jarsigner file is not exist, stop encrypt task]"
+        return
+    }
+    def flavorName = flavor != null ? flavor : ""
+    def outputFile = null
+    if (isAab) {
+        def outputDir = getBuildDir()
+        outputDir = new File(outputDir, "outputs")
+        outputDir = new File(outputDir, "bundle")
+        if (flavor != null) {
+            outputDir = new File(outputDir, flavorName + "Release")
+        } else {
+            outputDir = new File(outputDir, "release")
+        }
+        File[] outputFileList = outputDir.listFiles()
+        if (outputFileList != null && outputFileList.length > 0) {
+            outputFile = outputFileList[0]
+        }
+        println "> Task :${project.name}:encryptAssetsFilesFromAab flavorName : " + flavorName
+        println "> Task :${project.name}:encryptAssetsFilesFromAab outputDir : " + outputDir
+        println "> Task :${project.name}:encryptAssetsFilesFromAab outputFile : " + outputFile
+        println "> Task :${project.name}:encryptAssetsFilesFromAab outputFiles : " + outputDir.list()
+        if (outputFile.exists()) {
+            encryptAssetsFilesFromPackageInternal(flavorName, outputFile, isAab)
+        }
+    } else {
+        outputFile = Global.flavorMap.get(flavorName)
+        println "> Task :${project.name}:encryptAssetsFilesFromApk flavorName : " + flavorName
+        println "> Task :${project.name}:encryptAssetsFilesFromApk outputFile : " + outputFile
+        if (outputFile.exists()) {
+            encryptAssetsFilesFromPackageInternal(flavorName, outputFile, isAab)
+        }
+    }
+}
+
+/**
+ * 加密assets文件
+ * @param flavorName
+ * @param outputFile
+ * @return
+ */
+def encryptAssetsFilesFromPackageInternal(flavorName, File outputFile, isAab) {
+    def appId = getApplicationId(flavorName)
+    def packageMd5 = Aes.string2MD5(appId)
+    def md5sub = packageMd5.substring(0, 8)
+    def adName = "c" + md5sub + "fg"
+    def encryptNames = []
+    encryptNames.add(adName + ".dat")
+    encryptNames.add(adName + ".json")
+    encryptNames.add("data_config" + ".dat")
+    encryptNames.add("data_config" + ".json")
+    encryptNames.add("ad_mdn_cfg")
+    encryptNames.add("cfg_spread_info")
+    encryptNames.add("m" + md5sub.reverse() + "dn")
+    def configEncryptFiles = ext != null && ext.has("encryptFiles") ? ext.encryptFiles : null
+    if (configEncryptFiles != null && !configEncryptFiles.isEmpty()) {
+        configEncryptFiles.each {
+            encryptNames.add(it)
+        }
+    }
+    def workDir = outputFile.getParent()
+    println "> Task :${project.name}:encryptRelease flavorName : " + flavorName
+    println "> Task :${project.name}:encryptRelease appId : " + appId
+    println "> Task :${project.name}:encryptRelease encryptNames : " + encryptNames
+    println "> Task :${project.name}:encryptRelease workDir : " + workDir
+    println "> Task :${project.name}:encryptRelease outputFile : " + outputFile
+
+    // 读取待加密的文件到本地磁盘
+    def encryptFiles = readEncryptFileFromApk(workDir, encryptNames, outputFile, isAab)
+
+    println "> Task :${project.name}:encryptRelease encryptFiles : " + encryptFiles
+    if (encryptFiles != null && !encryptFiles.isEmpty()) {
+        encryptFileForAssets(workDir, encryptFiles)
+        updateEncryptFileToApk(workDir, encryptFiles, outputFile)
+        deleteTempAssetsFile(workDir, encryptNames, isAab)
+        signPackageFilePackage(flavorName, outputFile.getAbsolutePath(), isAab)
+    } else {
+        println "> Task :${project.name}:encryptRelease No files need encrypt"
+    }
+}
+
+/**
+ * 从apk中拷贝待加密文件
+ * @param workDir
+ * @param encryptNames
+ * @param outputFile
+ * @return
+ */
+def readEncryptFileFromApk(workDir, encryptNames, outputFile, isAab) {
+    def copyNames = []
+    def assetsFolder = isAab ? "base/assets" : "assets";
+    def assetsDir = new File(workDir, assetsFolder)
+    encryptNames.each {
+        def assetsFile = assetsFolder + "/" + it
+        def content = readContentFromApk(outputFile, assetsFile)
+        if (content != null && content.trim().length() > 0) {
+            assetsDir.mkdirs()
+            def outputFilePath = new File(assetsDir, it)
+            copyNames.add(assetsFile)
+            try {
+                FileOutputStream fos = new FileOutputStream(outputFilePath)
+                fos.write(content.getBytes())
+                fos.close()
+            } catch (Exception e) {
+                e.printStackTrace()
+            }
+        }
+    }
+    return copyNames
+}
+
+/**
+ * 对文件进行加密
+ * @param workDir
+ * @param encryptFiles
+ * @return
+ */
+def encryptFileForAssets(workDir, encryptFiles) {
+    def secret = ext != null && ext.has("secret") ? ext["secret"] : "123456789"
+    encryptFiles.each {
+        try {
+            def srcFile = new File(workDir, it).getAbsolutePath()
+            Aes.encryptFile(srcFile, secret)
+            println "> Task :${project.name}:encryptAdFiles [${it}]"
+            ext.out += ":${project.name}:encryptAdFiles [${it}]"
+        } catch (Exception e) {
+            e.printStackTrace()
+        }
+    }
+    println ""
+}
+
+/**
+ * 更新apk文件
+ * @param workDir
+ * @param encryptFiles
+ * @param outputFile
+ * @return
+ */
+def updateEncryptFileToApk(workDir, encryptFiles, outputFile) {
+    deleteFilesFromApk(outputFile.getAbsolutePath(), encryptFiles)
+    appendFilesIntoApk(workDir, outputFile.getAbsolutePath(), encryptFiles)
+}
+
+/**
+ * 删除临时文件
+ * @param workDir
+ * @param encryptNames
+ * @return
+ */
+def deleteTempAssetsFile(workDir, encryptNames, isAab) {
+    def assetsFolder = isAab ? "base/assets" : "assets";
+    def assetsDir = new File(workDir, assetsFolder)
+    encryptNames.each {
+        def outputFilePath = new File(assetsDir, it)
+        if (outputFilePath.exists()) {
+            outputFilePath.delete()
+        }
+    }
+    assetsDir.delete()
+    def baseDir = new File(workDir, "base")
+    if (baseDir.exists()) {
+        baseDir.delete()
+    }
+}
+
+
+/**
+ * 从apk中copy文件
+ * @param inputFile
+ * @param flavorName
+ * @param filePath
+ * @param outputPath
+ * @return
+ */
+def copyFileFromZipFile(inputFile, String filePath, String outputPath) {
+    println ":${project.name}:copyFileFromZipFile From ZipFile [" + inputFile + "] copy [" + filePath + "] to " + "[" + outputPath + "]"
+    def copyResult = false;
+    try {
+        ZipFile zipFile = new ZipFile(inputFile)
+        ZipEntry zipEntry = zipFile.getEntry(filePath)
+        if (zipEntry != null) {
+            InputStream is = zipFile.getInputStream(zipEntry)
+            FileOutputStream fos = new FileOutputStream(outputPath)
+            int read = 0;
+            byte[] buf = new byte[1024];
+            while ((read = is.read(buf)) > 0) {
+                fos.write(buf, 0, read)
+            }
+            fos.close()
+            is.close()
+            zipFile.close()
+            copyResult = true;
+        } else {
+            zipFile.close()
+        }
+    } catch (Exception e) {
+        e.printStackTrace()
+        copyResult = false;
+    }
+    return copyResult
+}
+
+
+/**
+ * 获取aapt文件路径
+ * @return
+ */
+def getZipAlignFile() {
+    def sdkDir = null
+    try {
+        Properties properties = new Properties()
+        InputStream inputStream = project.rootProject.file('local.properties').newDataInputStream();
+        properties.load(inputStream)
+        //读取文件
+        sdkDir = properties.getProperty('sdk.dir')
+    } catch (Exception e) {
+    }
+    if (sdkDir == null || !new File(sdkDir).exists()) {
+        if (sdkDir == null) {
+            println ":${project.name}:getZipAlignFile sdkDir == null, Use ANDROID_SDK_ROOT"
+        } else {
+            println ":${project.name}:getZipAlignFile sdkDir is not exist, Use ANDROID_SDK_ROOT"
+        }
+        sdkDir = System.getenv("ANDROID_SDK_ROOT")
+    }
+    if (sdkDir == null || !new File(sdkDir).exists()) {
+        if (sdkDir == null) {
+            println ":${project.name}:getZipAlignFile sdkDir == null, Use ANDROID_HOME"
+        } else {
+            println ":${project.name}:getZipAlignFile sdkDir is not exist, Use ANDROID_HOME"
+        }
+        sdkDir = System.getenv("ANDROID_HOME")
+    }
+    println ":${project.name}:getZipAlignFile sdkDir : [" + sdkDir + "]"
+    if (sdkDir == null) {
+        println ":${project.name}:getZipAlignFile sdkDir == null"
+        return null
+    }
+    if (!new File(sdkDir).exists()) {
+        println ":${project.name}:getZipAlignFile sdkDir is not exist"
+        return null
+    }
+    def exe = ""
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        exe = ".exe"
+    }
+    def compileSdkVersion = android.compileSdkVersion
+    if (compileSdkVersion != null) {
+        compileSdkVersion = compileSdkVersion.replaceAll("android-", "");
+    }
+    def buildToolDir = sdkDir + File.separator + "build-tools"
+    def buildToolVersionDir = android.buildToolsVersion
+    if (buildToolVersionDir == null) {
+        def buildToolDirs = new File(buildToolDir).list(new FilenameFilter() {
+            @Override
+            boolean accept(File dir, String name) {
+                return name.startsWith(String.valueOf(compileSdkVersion))
+            }
+        })
+        if (buildToolDirs != null && buildToolDirs.length > 0) {
+            buildToolVersionDir = buildToolDirs[0]
+        }
+    }
+    def zipAlignFile = buildToolDir + File.separator + buildToolVersionDir + File.separator + "zipalign" + exe
+    if (!new File(zipAlignFile).exists()) {
+        zipAlignFile = null
+    }
+    println ":${project.name}:getZipAlignFile zipAlignFile : [" + zipAlignFile + "]"
+    return zipAlignFile
+}
+
+/**
+ * 获取aapt文件路径
+ * @return
+ */
+def getApkSigner() {
+    def sdkDir = null
+    try {
+        Properties properties = new Properties()
+        InputStream inputStream = project.rootProject.file('local.properties').newDataInputStream();
+        properties.load(inputStream)
+        //读取文件
+        sdkDir = properties.getProperty('sdk.dir')
+    } catch (Exception e) {
+    }
+    if (sdkDir == null || !new File(sdkDir).exists()) {
+        if (sdkDir == null) {
+            println ":${project.name}:getApkSigner sdkDir == null, Use ANDROID_SDK_ROOT"
+        } else {
+            println ":${project.name}:getApkSigner sdkDir is not exist, Use ANDROID_SDK_ROOT"
+        }
+        sdkDir = System.getenv("ANDROID_SDK_ROOT")
+    }
+    if (sdkDir == null || !new File(sdkDir).exists()) {
+        if (sdkDir == null) {
+            println ":${project.name}:getApkSigner sdkDir == null, Use ANDROID_HOME"
+        } else {
+            println ":${project.name}:getApkSigner sdkDir is not exist, Use ANDROID_HOME"
+        }
+        sdkDir = System.getenv("ANDROID_HOME")
+    }
+    println ":${project.name}:getApkSigner sdkDir : [" + sdkDir + "]"
+    if (sdkDir == null) {
+        println ":${project.name}:getApkSigner sdkDir == null"
+        return null
+    }
+    if (!new File(sdkDir).exists()) {
+        println ":${project.name}:getApkSigner sdkDir is not exist"
+        return null
+    }
+    def compileSdkVersion = android.compileSdkVersion
+    if (compileSdkVersion != null) {
+        compileSdkVersion = compileSdkVersion.replaceAll("android-", "");
+    }
+    def buildToolDir = sdkDir + File.separator + "build-tools"
+    def buildToolVersionDir = android.buildToolsVersion
+    if (buildToolVersionDir == null) {
+        def buildToolDirs = new File(buildToolDir).list(new FilenameFilter() {
+            @Override
+            boolean accept(File dir, String name) {
+                return name.startsWith(String.valueOf(compileSdkVersion))
+            }
+        })
+        if (buildToolDirs != null && buildToolDirs.length > 0) {
+            buildToolVersionDir = buildToolDirs[0]
+        }
+    }
+    def apkSigner = buildToolDir + File.separator + buildToolVersionDir + File.separator + "lib" + File.separator + "apksigner.jar"
+    if (!new File(apkSigner).exists()) {
+        apkSigner = null
+    }
+    println ":${project.name}:getApkSigner apkSigner : [" + apkSigner + "]"
+    return apkSigner
+}
+
+/**
+ * 获取axmleditor文件路径
+ * @param flavorName
+ * @return
+ */
+def getAXMLEditJarFile() {
+    def rootDir = getRootDir()
+    def aXmlEditJarFile = new File(rootDir, "AXMLEditor.jar")
+    if (aXmlEditJarFile.exists()) {
+        return aXmlEditJarFile.getAbsolutePath()
+    } else {
+        System.err.println ":${project.name}:getAXMLEditorFile Can not find AXMLEditor.jar in [" + rootDir + "]"
+    }
+    aXmlEditJarFile = project.configurations.compileOnly*.toURI().find {
+        URI uri ->
+            new File(uri).name == getAxmlFileName()
+    }
+    if (aXmlEditJarFile != null && new File(aXmlEditJarFile).exists()) {
+        return new File(aXmlEditJarFile).getAbsolutePath()
+    } else {
+        System.err.println ":${project.name}:getAXMLEditorFile Can not find dependencies [compileOnly '" + getAxmlImplementation() + "] in app.dependencies"
+    }
+    return null
+}
+
+def get7ZipCmd() {
+    def axmlFile = Global.sAxmlEditorFilePath
+    def platform = "windows"
+    def ext = ".exe"
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        platform = "windows"
+        ext = ".exe"
+    } else if (org.gradle.internal.os.OperatingSystem.current().isLinux()) {
+        platform = "linux"
+        ext = ""
+    } else if (org.gradle.internal.os.OperatingSystem.current().isMacOsX()) {
+        platform = "mac"
+        ext = ""
+    }
+    def tempDir = System.getProperty("java.io.tmpdir")
+    def fromPath = String.format(Locale.ENGLISH, "7z/%s/7z%s", platform, ext)
+    def destPath = new File(tempDir, fromPath).getAbsolutePath()
+    def destFile = new File(destPath)
+    destFile.getParentFile().mkdirs()
+    def exist = destFile.exists()
+    println ":${project.name}:get7ZipCmd axmlFile : " + axmlFile
+    println ":${project.name}:get7ZipCmd fromPath : " + fromPath
+    println ":${project.name}:get7ZipCmd destPath : " + destPath
+    println ":${project.name}:get7ZipCmd 7z Exist : " + exist
+    if (!exist) {
+        def result = copyFileFromZipFile(axmlFile, fromPath, destPath)
+        println ":${project.name}:get7ZipCmd Result : " + result
+    }
+    exist = destFile.exists()
+    println ":${project.name}:get7ZipCmd 7z Exist : " + exist
+    if (exist) {
+        destFile.setExecutable(true, false);
+        return destFile.getAbsolutePath()
+    }
+    return null
+}
+
+def getAppendCmdListByAapt(packageFile, aaptFile, fileList) {
+    def cmd = []
+    cmd.add(aaptFile)
+    cmd.add("a")
+    cmd.add("-v")
+    cmd.add(packageFile)
+    fileList.each {
+        cmd.add(it)
+    }
+    return cmd
+}
+
+def getAppendCmdListBy7z(packageFile, sevenZip, fileList) {
+    def cmd = []
+    cmd.add(sevenZip)
+    cmd.add("a")
+    cmd.add("-tzip")
+    cmd.add(packageFile)
+    fileList.each {
+        cmd.add(it)
+    }
+    return cmd
+}
+/**
+ * 添加文件到apk
+ * @param workDir
+ * @param packageFile
+ * @param fileList
+ * @return
+ */
+def appendFilesIntoApk(workDir, packageFile, fileList) {
+    def sevenZip = Global.s7ZipCommandPath
+    def aaptFile = Global.sAaptFile
+    def cmd = []
+    if (sevenZip != null && new File(sevenZip).exists()) {
+        cmd = getAppendCmdListBy7z(packageFile, sevenZip, fileList)
+    } else if (aaptFile != null) {
+        cmd = getAppendCmdListByAapt(packageFile, aaptFile, fileList)
+    }
+    if (cmd == null || cmd.isEmpty()) {
+        println ":${project.name}:appendFilesIntoApk Error [cmd is empty]"
+        return
+    }
+    def cmdString = cmd.join(" ")
+    println ":${project.name}:appendFilesIntoApk Command [" + optimizeCommand(cmdString) + "]"
+    try {
+        Process p = cmdString.execute(null, new File(workDir))
+        p.waitFor(20, TimeUnit.SECONDS)
+        printOutput(p)
+        p.closeStreams()
+        p.destroy();
+    } catch (Exception e) {
+        e.printStackTrace()
+    }
+}
+
+def getDeleteCmdListByAapt(packageFile, aaptFile, fileList) {
+    def cmd = []
+    cmd.add(aaptFile)
+    cmd.add("r")
+    cmd.add("-v")
+    cmd.add(packageFile)
+    fileList.each {
+        cmd.add(it)
+    }
+    return cmd
+}
+
+def getDeleteCmdListBy7z(packageFile, sevenZip, fileList) {
+    def cmd = []
+    cmd.add(sevenZip)
+    cmd.add("d")
+    cmd.add("-tzip")
+    cmd.add(packageFile)
+    fileList.each {
+        cmd.add(it)
+    }
+    return cmd
+}
+
+/**
+ * 从apk中删除文件
+ * @param packageFile
+ * @param fileList
+ * @return
+ */
+def deleteFilesFromApk(packageFile, fileList) {
+    def sevenZip = Global.s7ZipCommandPath
+    def aaptFile = Global.sAaptFile
+    def cmd = []
+    if (sevenZip != null && new File(sevenZip).exists()) {
+        cmd = getDeleteCmdListBy7z(packageFile, sevenZip, fileList)
+    } else if (aaptFile != null) {
+        cmd = getDeleteCmdListByAapt(packageFile, aaptFile, fileList)
+    }
+    if (cmd == null || cmd.isEmpty()) {
+        println ":${project.name}:deleteFilesFromApk Error [cmd is empty]"
+        return
+    }
+    def cmdList = cmd.join(" ")
+    println ":${project.name}:deleteFilesFromApk Command [" + optimizeCommand(cmdList) + "]"
+    try {
+        def startTime = System.currentTimeMillis()
+        Process p = cmdList.execute()
+        p.waitFor(20, TimeUnit.SECONDS)
+        p.destroy()
+        def endTime = System.currentTimeMillis()
+        def signTime = (endTime - startTime) / 1000
+        println ":${project.name}:deleteFilesFromApk Command [Delete File From Apk Use Time " + signTime + "s]"
+    } catch (Exception e) {
+    }
+}
+
+/**
+ * 为apk包签名
+ * @param flavorName
+ * @param packageFile
+ * @return
+ */
+def signPackageFilePackage(flavorName, packageFile, isAab) {
+    println "\n> Task :${project.name}:signPackageFilePackage [" + flavorName + "] >>>>>>>>> Sign Package File Start <<<<<<<<<"
+    def signConfig = getSignConfig(flavorName)
+    if (signConfig == null) {
+        System.err.println "> Task :${project.name}:signPackageFilePackage [" + flavorName + "] signConfig is Null"
+        return
+    }
+    if (!signConfig.hasProperty("storeFile")
+            || !signConfig.hasProperty("storePassword")
+            || !signConfig.hasProperty("keyAlias")
+            || !signConfig.hasProperty("keyPassword")) {
+        System.err.println "> Task :${project.name}:signPackageFilePackage [" + flavorName + "] signConfig is not completion"
+        return
+    }
+    if (deleteOldSignFiles(packageFile)) {
+        signPackageFilePackageLocked(flavorName, packageFile, signConfig, isAab)
+    }
+    println "> Task :${project.name}:signPackageFilePackage [" + flavorName + "] >>>>>>>>> Sign Package File Complete <<<<<<<<<"
+}
+
+/**
+ * 删除旧的签名
+ * @param packageFile
+ * @return
+ */
+def deleteOldSignFiles(packageFile) {
+    def signInfoList = readOldSignedFiles(packageFile)
+    println "> Task :${project.name}:deleteOldSignFiles AllFile " + signInfoList
+    if (signInfoList == null || signInfoList.isEmpty()) {
+        return true
+    }
+    deleteFilesFromApk(packageFile, signInfoList)
+    return true
+}
+
+/**
+ * 获取旧的签名文件
+ * @param packageFile
+ * @return
+ */
+def readOldSignedFiles(packageFile) {
+    def list = []
+    try {
+        ZipFile zipFile = new ZipFile(packageFile)
+        Enumeration<? extends ZipEntry> entries = zipFile.entries()
+        while (entries.hasMoreElements()) {
+            def name = entries.nextElement().getName()
+            if (name != null && name.startsWith("META-INF") && (name.endsWith(".MF") || name.endsWith(".SF") || name.endsWith(".RSA"))) {
+                list.add(name)
+            }
+        }
+        zipFile.close()
+    } catch (IOException e) {
+        e.printStackTrace()
+    }
+    return list
+}
+
+/**
+ * 对渠道包签名
+ * @param flavorName
+ * @param packageFile
+ * @param signConfig
+ * @param jarSignerFile
+ * @return
+ */
+def signPackageFilePackageLocked(flavorName, packageFile, signConfig, isAab) {
+    def jarSignerFile = Global.sJarSignerFile
+    if (jarSignerFile == null) {
+        System.err.println "> Task :${project.name}:signPackageFilePackage jarSignerFile is Null"
+        return
+    }
+    if (signConfig != null
+            && signConfig.hasProperty("storeFile")
+            && signConfig.hasProperty("storePassword")
+            && signConfig.hasProperty("keyAlias")
+            && signConfig.hasProperty("keyPassword")) {
+        println ":${project.name}:signPackageFilePackageLocked PackageFile [" + packageFile + "]"
+        if (packageFile.endsWith(".aab")) {
+            signApkWithJarSigner(flavorName, packageFile, signConfig)
+            zipAlignPackageFile(flavorName, packageFile, isAab)
+        } else {
+            signApkWithApkSigner(flavorName, packageFile, signConfig, isAab)
+        }
+    }
+}
+
+
+def signApkWithJarSigner(flavorName, packageFile, signConfig) {
+    if (Global.sJarSignerFile == null || !new File(Global.sJarSignerFile).exists()) {
+        System.err.println "> Task :${project.name}:signApkWithJarSigner jarSignerFile is Null"
+        return false
+    }
+    def cmdlist = []
+    cmdlist.add(Global.sJarSignerFile)
+
+    cmdlist.add("-digestalg")
+    cmdlist.add("SHA1")
+    cmdlist.add("-sigalg")
+    cmdlist.add("MD5withRSA")
+    // cmdlist.add("-tsa https://timestamp.geotrust.com/tsa")
+    cmdlist.add("-keystore")
+    cmdlist.add(signConfig.storeFile)
+    cmdlist.add("-storepass")
+    cmdlist.add(signConfig.storePassword)
+    cmdlist.add("-keypass")
+    cmdlist.add(signConfig.keyPassword)
+    cmdlist.add("-signedjar")
+    cmdlist.add(packageFile)
+    cmdlist.add(packageFile)
+    cmdlist.add(signConfig.keyAlias)
+
+    def cmdString = cmdlist.join(" ")
+    def cmdStringInfo = cmdlist.join(",")
+    println ":${project.name}:signApkWithJarSigner [" + flavorName + "] Command [" + optimizeCommand(cmdStringInfo, ",") + "]"
+    try {
+        def startTime = System.currentTimeMillis()
+        Process p = cmdString.execute()
+        p.waitFor(20, TimeUnit.SECONDS)
+        p.destroy();
+        def endTime = System.currentTimeMillis()
+        def signTime = (endTime - startTime) / 1000
+        println ":${project.name}:signApkWithJarSigner [" + flavorName + "] Command [Sign Apk Use Time " + signTime + "s]"
+        return true
+    } catch (Exception e) {
+    }
+    return false
+}
+
+def zipAlignPackageFile(flavorName, packageFile, isAab) {
+    def apkName = new File(packageFile).getName()
+    def apkDir = new File(packageFile).getParent()
+    def alignApkName = apkName.substring(0, apkName.lastIndexOf(isAab ? ".aab" : ".apk")) + (isAab ? "-align.aab" : "-align.apk")
+    println("alignApkName : " + alignApkName)
+    println("apkDir : " + apkDir)
+    def alignPackageFile = new File(apkDir, alignApkName)
+    println("alignPackageFile : " + alignPackageFile)
+    println "\n:${project.name}:zipAlignPackageFile [" + flavorName + "] >>>>>>>>> ZipAlign Package File Start <<<<<<<<<"
+    def cmdlist = []
+    cmdlist.add(Global.sZipAlignFile)
+    cmdlist.add("-f")
+    cmdlist.add("4")
+    cmdlist.add(packageFile)
+    cmdlist.add(alignPackageFile.getAbsolutePath())
+
+    def cmdString = cmdlist.join(" ")
+    def cmdStringInfo = cmdlist.join(",")
+    println ":${project.name}:zipAlignPackageFile [" + flavorName + "] Command [" + optimizeCommand(cmdStringInfo, ",") + "]"
+    try {
+        def startTime = System.currentTimeMillis()
+        Process p = cmdString.execute()
+        p.waitFor(20, TimeUnit.SECONDS)
+        printOutput(p)
+        p.destroy();
+        def endTime = System.currentTimeMillis()
+        def signTime = (endTime - startTime) / 1000
+        println ":${project.name}:zipAlignPackageFile [" + flavorName + "] Command [ZipAlign Apk Use Time " + signTime + "s]"
+    } catch (Exception e) {
+    }
+    println ":${project.name}:zipAlignPackageFile [" + flavorName + "] >>>>>>>>> ZipAlign Package File Complete <<<<<<<<<\n"
+    new File(packageFile).delete()
+    alignPackageFile.renameTo(packageFile)
+}
+
+def signApkWithApkSigner(flavorName, packageFile, signConfig, isAab) {
+    if (Global.sApkSignerFile == null || !new File(Global.sApkSignerFile).exists()) {
+        System.err.println "> Task :${project.name}:signApkWithApkSigner apkSignerFile is Null"
+        return false
+    }
+    zipAlignPackageFile(flavorName, packageFile, isAab)
+    def cmdlist = []
+    cmdlist.add("java")
+    cmdlist.add("-jar")
+    cmdlist.add(Global.sApkSignerFile)
+    cmdlist.add("sign")
+    cmdlist.add("--ks")
+    cmdlist.add(signConfig.storeFile)
+    cmdlist.add("--ks-key-alias")
+    cmdlist.add(signConfig.keyAlias)
+    cmdlist.add("--ks-pass")
+    cmdlist.add("pass:" + signConfig.storePassword)
+    cmdlist.add("--key-pass")
+    cmdlist.add("pass:" + signConfig.keyPassword)
+    cmdlist.add("--v4-signing-enabled")
+    cmdlist.add("false")
+    cmdlist.add("--out")
+    cmdlist.add(packageFile)
+    cmdlist.add(packageFile)
+    def cmdString = cmdlist.join(" ")
+    def cmdStringInfo = cmdlist.join(",")
+    println ":${project.name}:signApkWithApkSigner [" + flavorName + "] Command [" + optimizeCommand(cmdStringInfo, ",") + "]"
+    try {
+        def startTime = System.currentTimeMillis()
+        Process p = cmdString.execute()
+        p.waitFor(20, TimeUnit.SECONDS)
+        printOutput(p)
+        p.destroy();
+        def endTime = System.currentTimeMillis()
+        def signTime = (endTime - startTime) / 1000
+        println ":${project.name}:signApkWithApkSigner [" + flavorName + "] Command [Sign Apk Use Time " + signTime + "s]"
+        return true
+    } catch (Exception e) {
+    }
+    return false
+}
+
+/**
+ * 获取Jarsigner文件路径
+ * @param flavorName
+ * @return
+ */
+def getJarSigner() {
+    def jarSignerFile = null
+    try {
+        def cmdString = "which jarsigner"
+        if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+            cmdString = "where jarsigner"
+        }
+        def result = cmdString.execute().text.trim()
+        if (result != null && result.length() > 0) {
+            BufferedReader br = new BufferedReader(new StringReader(result))
+            def tmpFile = br.readLine()
+            br.close()
+            File f = new File(tmpFile)
+            if (f.exists()) {
+                jarSignerFile = tmpFile
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace()
+    }
+    return jarSignerFile
+}
+
+/**
+ * 获取aapt文件路径
+ * @return
+ */
+def getAaptFile() {
+    def sdkDir = null
+    try {
+        Properties properties = new Properties()
+        InputStream inputStream = project.rootProject.file('local.properties').newDataInputStream();
+        properties.load(inputStream)
+        //读取文件
+        sdkDir = properties.getProperty('sdk.dir')
+    } catch (Exception e) {
+    }
+    if (sdkDir == null || !new File(sdkDir).exists()) {
+        if (sdkDir == null) {
+            println "> Task :${project.name}:getAaptFile sdkDir == null, Use ANDROID_SDK_ROOT"
+        } else {
+            println "> Task :${project.name}:getAaptFile sdkDir is not exist, Use ANDROID_SDK_ROOT"
+        }
+        sdkDir = System.getenv("ANDROID_SDK_ROOT")
+    }
+    if (sdkDir == null || !new File(sdkDir).exists()) {
+        if (sdkDir == null) {
+            println ":${project.name}:getAaptFile sdkDir == null, Use ANDROID_HOME"
+        } else {
+            println ":${project.name}:getAaptFile sdkDir is not exist, Use ANDROID_HOME"
+        }
+        sdkDir = System.getenv("ANDROID_HOME")
+    }
+    println "> Task :${project.name}:getAaptFile sdkDir : " + sdkDir
+    if (sdkDir == null) {
+        println "> Task :${project.name}:getAaptFile sdkDir == null"
+        return null
+    }
+    if (!new File(sdkDir).exists()) {
+        println "> Task :${project.name}:getAaptFile sdkDir is not exist"
+        return null
+    }
+    def exe = ""
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        exe = ".exe"
+    }
+    def compileSdkVersion = android.compileSdkVersion
+    if (compileSdkVersion != null) {
+        compileSdkVersion = compileSdkVersion.replaceAll("android-", "");
+    }
+    def buildToolDir = sdkDir + File.separator + "build-tools"
+    def buildToolVersionDir = android.buildToolsVersion
+    if (buildToolVersionDir == null) {
+        def buildToolDirs = new File(buildToolDir).list(new FilenameFilter() {
+            @Override
+            boolean accept(File dir, String name) {
+                return name.startsWith(String.valueOf(compileSdkVersion))
+            }
+        })
+        if (buildToolDirs != null && buildToolDirs.length > 0) {
+            buildToolVersionDir = buildToolDirs[0]
+        }
+    }
+    def aaptFile = buildToolDir + File.separator + buildToolVersionDir + File.separator + "aapt" + exe
+    if (new File(aaptFile).exists()) {
+        println "> Task :${project.name}:getAaptFile aaptFile : " + aaptFile
+        return aaptFile
+    }
+    return null
+}
+
+/**
+ * 读取apk中指定文件的内容
+ * @param packageFile
+ * @param filePath
+ * @return
+ */
+def readContentFromApk(packageFile, filePath) {
+    String content = null;
+    try {
+        ZipFile zipFile = new ZipFile(packageFile)
+        ZipEntry zipEntry = zipFile.getEntry(filePath)
+        if (zipEntry != null) {
+            InputStream is = zipFile.getInputStream(zipEntry)
+            StringBuilder builder = new StringBuilder();
+            int read = 0;
+            byte[] buf = new byte[1024];
+            while ((read = is.read(buf)) > 0) {
+                builder.append(new String(buf, 0, read));
+            }
+            is.close();
+            content = builder.toString()
+        }
+        zipFile.close()
+    } catch (Exception e) {
+        e.printStackTrace()
+    }
+    return content
+}
+
+def extractFileFromZip(packageFile, filePath, outputFile) {
+    def extraSuccess = false
+    try {
+        ZipFile zipFile = new ZipFile(packageFile)
+        ZipEntry zipEntry = zipFile.getEntry(filePath)
+        if (zipEntry != null) {
+            InputStream is = zipFile.getInputStream(zipEntry)
+            byte[] buf = new byte[1024]
+            def length = 0
+            FileOutputStream fos = new FileOutputStream(outputFile)
+            while ((length = is.read(buf)) > 0) {
+                fos.write(buf, 0, length)
+            }
+            is.close()
+            fos.close()
+        }
+        zipFile.close()
+        extraSuccess = true
+    } catch (Exception e) {
+        extraSuccess = false
+        e.printStackTrace()
+    }
+    return extraSuccess
+}
+
+def optimizeCommand(cmdString, delimiter = " ") {
+    if (android.defaultConfig.ext.has("debug") && android.defaultConfig.ext["debug"]) {
+        if (" ".equals(delimiter)) {
+            return cmdString
+        }
+        return cmdString.replaceAll(",", " ")
+    }
+    try {
+        List<String> list = Arrays.asList(cmdString.split(delimiter))
+        List<String> list2 = new ArrayList<String>(list.size())
+        for (int index = 0; index < list.size(); index++) {
+            String s = list.get(index)
+            File file = new File(s)
+            if (file.exists()) {
+                list2.add(file.getName())
+            } else {
+                list2.add(s)
+            }
+        }
+        return list2.join(" ")
+    } catch (Exception e) {
+        e.printStackTrace()
+    }
+    return cmdString
+}
+
+class Aes {
+    private static void appendHex(StringBuffer paramStringBuffer, byte paramByte) {
+        paramStringBuffer.append(
+                "0123456789ABCDEF".charAt(0xF & paramByte >> 4)).append(
+                "0123456789ABCDEF".charAt(paramByte & 0xF));
+    }
+
+    static String decrypt(String key, String content) {
+        try {
+            String str = new String(decrypt(getRawKey(key.getBytes()),
+                    toByte(content)));
+            return str;
+        } catch (Exception localException) {
+            System.out.println("decrypt error: " + localException);
+        }
+        return null;
+    }
+
+    static byte[] decrypt(byte[] key,
+                          byte[] content) throws Exception {
+        SecretKeySpec localSecretKeySpec = new SecretKeySpec(key,
+                "AES");
+        Cipher localCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        localCipher.init(2, localSecretKeySpec, new IvParameterSpec(
+                new byte[localCipher.getBlockSize()]));
+        return localCipher.doFinal(content);
+    }
+
+    static String decryptRaw(String seed, byte[] content) {
+        try {
+            String str = new String(
+                    decrypt(getRawKey(seed.getBytes()), content));
+            return str;
+        } catch (Exception localException) {
+            System.out.println("decrypt raw error: " + localException);
+        }
+        return null;
+    }
+
+    static String encryptPublic(String key, String content) {
+        try {
+            byte[] result = encrypt(getRawKey(key.getBytes()),
+                    content.getBytes());
+            return toHex(result);
+        } catch (Exception localException) {
+        }
+        return null;
+    }
+
+    private static byte[] encrypt(byte[] key,
+                                  byte[] content) throws Exception {
+        SecretKeySpec localSecretKeySpec = new SecretKeySpec(key,
+                "AES");
+        Cipher localCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        localCipher.init(1, localSecretKeySpec, new IvParameterSpec(
+                new byte[localCipher.getBlockSize()]));
+        return localCipher.doFinal(content);
+    }
+
+    static byte[] encryptRaw(String key, String content) {
+        try {
+            byte[] arrayOfByte = encrypt(getRawKey(key.getBytes()),
+                    content.getBytes());
+            return arrayOfByte;
+        } catch (Exception localException) {
+            System.out.println("encrypt raw error: " + localException);
+        }
+        return null;
+    }
+
+    static String fromHex(String content) {
+        return new String(toByte(content));
+    }
+
+    private static byte[] getRawKey(byte[] key) throws Exception {
+        byte[] arrayOfByte = new byte[16];
+        if (key == null)
+            throw new IllegalArgumentException("seed == null");
+        if (key.length == 0)
+            throw new IllegalArgumentException("seed.length == 0");
+        if (key.length < 16) {
+            int i = 0;
+            while (i < arrayOfByte.length) {
+                if (i < key.length) {
+                    arrayOfByte[i] = key[i];
+                } else {
+                    arrayOfByte[i] = 0;
+                }
+                i++;
+            }
+        }
+        return arrayOfByte;
+    }
+
+    static byte[] toByte(String content) {
+        int i = content.length() / 2;
+        byte[] arrayOfByte = new byte[i];
+        for (int j = 0; j < i; j++)
+            arrayOfByte[j] = Integer.valueOf(
+                    content.substring(j * 2, 2 + j * 2), 16).byteValue();
+        return arrayOfByte;
+    }
+
+    static String toHex(String content) {
+        return toHex(content.getBytes());
+    }
+
+    static String toHex(byte[] content) {
+        if (content == null)
+            return "";
+        StringBuffer localStringBuffer = new StringBuffer(
+                2 * content.length);
+        for (int i = 0; i < content.length; i++)
+            appendHex(localStringBuffer, content[i]);
+        return localStringBuffer.toString();
+    }
+
+    private static String readFromFile(File f) {
+        if (!f.exists()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        try {
+            byte[] buf = new byte[4096];
+            int read = 0;
+            FileInputStream fis = new FileInputStream(f);
+            while ((read = fis.read(buf)) > 0) {
+                builder.append(new String(buf, 0, read));
+            }
+            fis.close();
+            return builder.toString();
+        } catch (Exception e) {
+        }
+        return null;
+    }
+
+    private static void writeToFile(File f, String out) {
+        try {
+            if (f.exists()) {
+                f.delete();
+            }
+            f.createNewFile();
+            FileOutputStream fos = new FileOutputStream(f);
+            fos.write(out.getBytes());
+            fos.close();
+        } catch (Exception e) {
+        }
+    }
+
+    private static void usage() {
+        String usage = "java -jar aes.jar <-k rawkey> [-e/-d] [-i input] [-o output] [-s str]";
+        System.out.println(usage);
+    }
+
+    private static boolean isEmpty(String str) {
+        if (str == null || str.trim().equals("")) {
+            return true;
+        }
+        return false;
+    }
+
+    static String readFromStream(InputStream is) {
+        if (is == null) {
+            return null;
+        }
+        try {
+            StringBuilder builder = new StringBuilder();
+            int read = 0;
+            byte[] buf = new byte[1024];
+            while ((read = is.read(buf)) > 0) {
+                builder.append(new String(buf, 0, read));
+            }
+            is.close();
+            return builder.toString();
+        } catch (Exception e) {
+            e.printStackTrace()
+        }
+        return null;
+    }
+
+    static String readLocal(String filePath) {
+        try {
+            InputStream is = new FileInputStream(filePath);
+            return readFromStream(is);
+        } catch (Exception e) {
+        }
+        return null;
+    }
+
+    static boolean isJson(String file) {
+        try {
+            String s = readLocal(file)
+            if (s != null) {
+                s = s.trim()
+                if (s.startsWith("[") || s.startsWith("{")) {
+                    return true
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace()
+        }
+        return false
+    }
+
+    static void encryptFile(String originFile, String secret) {
+        try {
+            String encrypt = encryptPublic(secret, readFromFile(new File(originFile))); //加密
+            writeToFile(new File(originFile), encrypt);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    static String byte2MD5(byte[] byteArray) {
+        MessageDigest md5 = null;
+        try {
+            md5 = MessageDigest.getInstance("MD5");
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "";
+        }
+        byte[] md5Bytes = md5.digest(byteArray);
+        StringBuffer hexValue = new StringBuffer();
+        for (int i = 0; i < md5Bytes.length; i++) {
+            int val = md5Bytes[i] & 0xff;
+            if (val < 16) {
+                hexValue.append("0");
+            }
+            hexValue.append(Integer.toHexString(val));
+        }
+        return hexValue.toString();
+    }
+
+    static String string2MD5(String source) {
+        return string2MD5(source, "utf-8");
+    }
+
+    static String string2MD5(String source, String encode) {
+        try {
+            return byte2MD5(source.getBytes(encode));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+}
